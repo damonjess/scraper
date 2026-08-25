@@ -44,7 +44,7 @@ dependencies {
     implementation(libs.compose.ui)
     implementation(libs.compose.material)
     implementation(libs.compose.tooling.preview)
-    implementation(libs.osmdroid)
+    implementation(libs.maplibre)
     implementation(libs.jsoup)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.espresso.core)

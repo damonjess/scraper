@@ -1,326 +1,470 @@
 package com.example.scraper
 
-import android.annotation.SuppressLint
-import android.content.pm.PackageManager
+import android.graphics.Color as AndroidColor
 import android.os.Bundle
-import android.webkit.WebView
-import android.webkit.WebViewClient
 import androidx.activity.compose.setContent
 import androidx.appcompat.app.AppCompatActivity
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.material.*
-import androidx.compose.runtime.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material.Button
+import androidx.compose.material.Card
+import androidx.compose.material.Checkbox
+import androidx.compose.material.Divider
+import androidx.compose.material.MaterialTheme
+import androidx.compose.material.Text
+import androidx.compose.material.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.core.app.ActivityCompat
-import androidx.core.content.ContextCompat
+import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.jsoup.Jsoup
-import org.osmdroid.config.Configuration
-import org.osmdroid.events.MapEventsReceiver
-import org.osmdroid.tileprovider.tilesource.TileSourceFactory
-import android.content.ContentValues
-import android.content.Context
-import android.os.Environment
-import android.provider.MediaStore
-import android.widget.Toast
-import org.json.JSONObject
-import org.osmdroid.util.GeoPoint
-import org.osmdroid.views.MapView
-import org.osmdroid.views.overlay.MapEventsOverlay
-import org.osmdroid.views.overlay.Marker
-import org.osmdroid.views.overlay.Polygon
-import android.graphics.Color as AndroidColor
+import org.maplibre.android.MapLibre
+import org.maplibre.android.annotations.MarkerOptions
+import org.maplibre.android.annotations.PolygonOptions
+import org.maplibre.android.camera.CameraPosition
+import org.maplibre.android.geometry.LatLng
+import org.maplibre.android.maps.MapLibreMap
+import org.maplibre.android.maps.MapView
 
 class MainActivity : AppCompatActivity() {
 
-    data class PanoResult(val lat: Double, val lng: Double, val panoId: String)
-    
-    enum class SelectionMode { POINT, SQUARE }
+    private companion object {
+        const val OPEN_FREE_MAP_STYLE_URL = "https://tiles.openfreemap.org/styles/liberty"
+        const val INITIAL_LATITUDE = 51.5074
+        const val INITIAL_LONGITUDE = -0.1278
+        const val KARTAVIEW_ATTRIBUTION = "© Grab and KartaView Contributors · CC BY-SA 4.0"
+    }
+
+    private var mapView: MapView? = null
+
+    data class LocationPoint(val latitude: Double, val longitude: Double)
+
+    data class AreaBounds(
+        val minLatitude: Double,
+        val maxLatitude: Double,
+        val minLongitude: Double,
+        val maxLongitude: Double
+    ) {
+        fun summary(): String = String.format(
+            Locale.US,
+            "%.5f–%.5f, %.5f–%.5f",
+            minLatitude,
+            maxLatitude,
+            minLongitude,
+            maxLongitude
+        )
+    }
+
+    enum class SelectionMode { POINT, AREA }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        val ctx = applicationContext
-        val prefs = ctx.getSharedPreferences("osmdroid", MODE_PRIVATE)
-        Configuration.getInstance().load(ctx, prefs)
-        
-        // Set User-Agent AFTER loading configuration to ensure it's not overwritten
-        val uniqueUserAgent = "StreetViewScraper/1.0 (Android; contact@example.com) " + System.currentTimeMillis()
-        Configuration.getInstance().userAgentValue = uniqueUserAgent
-        
         super.onCreate(savedInstanceState)
-        
-        setContent {
-            ScraperApp()
-        }
+        MapLibre.getInstance(this)
+        setContent { OpenImageryApp() }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        mapView?.onStart()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        mapView?.onResume()
+    }
+
+    override fun onPause() {
+        mapView?.onPause()
+        super.onPause()
+    }
+
+    override fun onStop() {
+        mapView?.onStop()
+        super.onStop()
+    }
+
+    override fun onLowMemory() {
+        super.onLowMemory()
+        mapView?.onLowMemory()
+    }
+
+    override fun onDestroy() {
+        mapView?.onDestroy()
+        mapView = null
+        super.onDestroy()
     }
 
     @Composable
-    fun ScraperApp() {
+    private fun OpenImageryApp() {
         val context = LocalContext.current
         val scope = rememberCoroutineScope()
-        
         var selectionMode by remember { mutableStateOf(SelectionMode.POINT) }
-        var selectedPoint by remember { mutableStateOf(GeoPoint(51.5074, -0.1278)) }
-        var squarePoints by remember { mutableStateOf<List<GeoPoint>>(emptyList()) }
-        var indexedResults by remember { mutableStateOf<List<PanoResult>>(emptyList()) }
-        
-        var streetViewUrl by remember { mutableStateOf("") }
-        var statusText by remember { mutableStateOf("Ready") }
-
-        LaunchedEffect(selectedPoint) {
-            if (selectionMode == SelectionMode.POINT) {
-                streetViewUrl = "https://www.google.com/maps/@${selectedPoint.latitude},${selectedPoint.longitude},3a,75y,90t/data=!3m6!1e1"
-            }
+        var selectedPoint by remember { mutableStateOf(LocationPoint(INITIAL_LATITUDE, INITIAL_LONGITUDE)) }
+        var areaCorners by remember { mutableStateOf<List<LocationPoint>>(emptyList()) }
+        var kartaPhotos by remember { mutableStateOf<List<KartaPhoto>>(emptyList()) }
+        var selectedPhotoIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+        var statusText by remember { mutableStateOf("Tap Select Area to search open street imagery.") }
+        var isSearching by remember { mutableStateOf(false) }
+        var isDownloading by remember { mutableStateOf(false) }
+        val selectedBounds = remember(areaCorners) {
+            if (areaCorners.size == 2) boundsFrom(areaCorners[0], areaCorners[1]) else null
+        }
+        val selectedPhotos = remember(kartaPhotos, selectedPhotoIds) {
+            kartaPhotos.filter { it.id in selectedPhotoIds }
         }
 
         Column(modifier = Modifier.fillMaxSize()) {
-            // Control Bar
             Row(
-                modifier = Modifier.fillMaxWidth().padding(8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Button(onClick = { 
-                    selectionMode = if (selectionMode == SelectionMode.POINT) SelectionMode.SQUARE else SelectionMode.POINT 
-                    squarePoints = emptyList()
-                    indexedResults = emptyList()
-                    statusText = "Mode: $selectionMode"
-                }) {
-                    Text(if (selectionMode == SelectionMode.POINT) "Switch to Square" else "Switch to Point")
-                }
-                
-                if ((selectionMode == SelectionMode.SQUARE) && (squarePoints.size == 2)) {
-                    Button(onClick = {
-                        scope.launch(Dispatchers.IO) {
-                            indexedResults = indexArea(squarePoints[0], squarePoints[1]) { progress ->
-                                statusText = progress
-                            }
+                Button(
+                    onClick = {
+                        selectionMode = if (selectionMode == SelectionMode.POINT) {
+                            SelectionMode.AREA
+                        } else {
+                            SelectionMode.POINT
                         }
-                    }) {
-                        Text("Index Area")
+                        areaCorners = emptyList()
+                        kartaPhotos = emptyList()
+                        selectedPhotoIds = emptySet()
+                        statusText = if (selectionMode == SelectionMode.AREA) {
+                            "Area mode: tap the first corner of the search area."
+                        } else {
+                            "Point mode: tap a location, then choose Select Area to search imagery."
+                        }
                     }
+                ) {
+                    Text(if (selectionMode == SelectionMode.AREA) "Select Point" else "Select Area")
                 }
 
-                if (indexedResults.isNotEmpty()) {
-                    Button(onClick = { savePointsToCSV(context, indexedResults) }) {
-                        Text("Save CSV (${indexedResults.size})")
+                if (selectedBounds != null) {
+                    Button(
+                        enabled = !isSearching && !isDownloading,
+                        onClick = {
+                            scope.launch {
+                                isSearching = true
+                                kartaPhotos = emptyList()
+                                selectedPhotoIds = emptySet()
+                                statusText = "Searching KartaView coverage…"
+                                try {
+                                    val results = withContext(Dispatchers.IO) {
+                                        KartaViewClient.searchArea(
+                                            minLatitude = selectedBounds.minLatitude,
+                                            maxLatitude = selectedBounds.maxLatitude,
+                                            minLongitude = selectedBounds.minLongitude,
+                                            maxLongitude = selectedBounds.maxLongitude
+                                        )
+                                    }
+                                    kartaPhotos = results
+                                    statusText = if (results.isEmpty()) {
+                                        "No KartaView frames were returned in this area. Try another area or import imagery you own."
+                                    } else {
+                                        "KartaView returned ${results.size} frames. Select the images you want to save."
+                                    }
+                                } catch (error: Exception) {
+                                    statusText = "KartaView search failed: ${error.message ?: "network error"}"
+                                } finally {
+                                    isSearching = false
+                                }
+                            }
+                        }
+                    ) {
+                        Text(if (isSearching) "Searching…" else "Find Open Images")
                     }
                 }
             }
 
-            Text(text = statusText, modifier = Modifier.padding(horizontal = 8.dp), style = MaterialTheme.typography.caption)
+            Text(
+                text = if (selectedBounds != null && kartaPhotos.isEmpty() && !isSearching) {
+                    "Selected area: ${selectedBounds.summary()}"
+                } else {
+                    statusText
+                },
+                modifier = Modifier.padding(horizontal = 8.dp),
+                style = MaterialTheme.typography.caption
+            )
 
-            // Map Section
             Box(modifier = Modifier.weight(1f)) {
-                OSMMapView(
+                OpenMapView(
                     mode = selectionMode,
-                    squarePoints = squarePoints,
-                    onPointSelected = { selectedPoint = it },
-                    onSquarePointAdded = { p ->
-                        squarePoints = if (squarePoints.size >= 2) listOf(p) else squarePoints + p
+                    selectedPoint = selectedPoint,
+                    areaCorners = areaCorners,
+                    onPointSelected = { point ->
+                        selectedPoint = point
+                        statusText = String.format(
+                            Locale.US,
+                            "Point selected: %.5f, %.5f",
+                            point.latitude,
+                            point.longitude
+                        )
+                    },
+                    onAreaCornerSelected = { point ->
+                        val newCorners = if (areaCorners.size >= 2) listOf(point) else areaCorners + point
+                        areaCorners = newCorners
+                        kartaPhotos = emptyList()
+                        selectedPhotoIds = emptySet()
+                        statusText = when (newCorners.size) {
+                            1 -> "First corner selected. Tap the opposite corner."
+                            2 -> "Area selected: ${boundsFrom(newCorners[0], newCorners[1]).summary()}. Tap Find Open Images."
+                            else -> "Area mode"
+                        }
                     }
                 )
             }
 
-            Divider(thickness = 2.dp)
-
-            // Street View Section
-            Box(modifier = Modifier.weight(1f)) {
-                if (streetViewUrl.isNotEmpty()) {
-                    StreetViewWebView(url = streetViewUrl)
-                }
-            }
-        }
-    }
-
-    private suspend fun indexArea(p1: GeoPoint, p2: GeoPoint, onProgress: (String) -> Unit): List<PanoResult> {
-        val foundPoints = mutableListOf<PanoResult>()
-        val minLat = minOf(p1.latitude, p2.latitude)
-        val maxLat = maxOf(p1.latitude, p2.latitude)
-        val minLng = minOf(p1.longitude, p2.longitude)
-        val maxLng = maxOf(p1.longitude, p2.longitude)
-
-        val step = 0.0001 
-        var checkedCount = 0
-
-        val latSteps = ((maxLat - minLat) / step).toInt().coerceAtMost(20)
-        val lngSteps = ((maxLng - minLng) / step).toInt().coerceAtMost(20)
-
-        for (i in 0..latSteps) {
-            for (j in 0..lngSteps) {
-                val lat = minLat + (i * step)
-                val lng = minLng + (j * step)
-                checkedCount++
-                
-                try {
-                    val url = "https://maps.googleapis.com/maps/api/streetview/metadata?location=$lat,$lng&key=" 
-                    val response = Jsoup.connect(url).ignoreContentType(true).execute().body()
-                    val json = JSONObject(response)
-                    if (json.getString("status") == "OK") {
-                        val panoId = json.getString("pano_id")
-                        foundPoints.add(PanoResult(lat, lng, panoId))
+            Divider(thickness = 1.dp)
+            KartaPhotoPanel(
+                photos = kartaPhotos,
+                selectedPhotoIds = selectedPhotoIds,
+                isDownloading = isDownloading,
+                onToggle = { photoId, isSelected ->
+                    selectedPhotoIds = selectedPhotoIds.toMutableSet().apply {
+                        if (isSelected) add(photoId) else remove(photoId)
                     }
-                } catch (_: Exception) { /* Ignore */ }
-
-                withContext(Dispatchers.Main) {
-                    onProgress("Scanning: $checkedCount points... Found: ${foundPoints.size}")
+                },
+                onSelectAll = { selectedPhotoIds = kartaPhotos.mapTo(linkedSetOf()) { it.id } },
+                onClearSelection = { selectedPhotoIds = emptySet() },
+                onDownloadSelected = {
+                    scope.launch {
+                        isDownloading = true
+                        try {
+                            val exportResult = KartaViewExporter.exportSelected(
+                                context = context,
+                                photos = selectedPhotos,
+                                onProgress = { progress -> statusText = progress }
+                            )
+                            statusText = buildString {
+                                append("Saved ${exportResult.downloadedCount} images")
+                                if (exportResult.failedCount > 0) append("; ${exportResult.failedCount} failed")
+                                append(". JSON and CSV manifests are in Downloads/KartaView.")
+                            }
+                        } catch (error: Exception) {
+                            statusText = "Download failed: ${error.message ?: "network error"}"
+                        } finally {
+                            isDownloading = false
+                        }
+                    }
                 }
-            }
-        }
-        withContext(Dispatchers.Main) {
-            onProgress("Indexing Complete. Found ${foundPoints.size} panoramas.")
-        }
-        return foundPoints
-    }
-
-    private fun savePointsToCSV(context: Context, points: List<PanoResult>) {
-        val csvHeader = "latitude,longitude,panorama_id\n"
-        val csvContent = points.joinToString("\n") { "${it.lat},${it.lng},${it.panoId}" }
-        val finalContent = csvHeader + csvContent
-        
-        val values = ContentValues().apply {
-            put(MediaStore.MediaColumns.DISPLAY_NAME, "streetview_index_${System.currentTimeMillis()}.csv")
-            put(MediaStore.MediaColumns.MIME_TYPE, "text/csv")
-            put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
-        }
-
-        try {
-            val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-            uri?.let {
-                context.contentResolver.openOutputStream(it)?.use { stream ->
-                    stream.write(finalContent.toByteArray())
-                }
-                Toast.makeText(context, "Saved to Downloads", Toast.LENGTH_LONG).show()
-            } ?: run {
-                Toast.makeText(context, "Error creating file", Toast.LENGTH_SHORT).show()
-            }
-        } catch (e: Exception) {
-            Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_LONG).show()
+            )
         }
     }
 
     @Composable
-    fun OSMMapView(
-        mode: SelectionMode,
-        squarePoints: List<GeoPoint>,
-        onPointSelected: (GeoPoint) -> Unit,
-        onSquarePointAdded: (GeoPoint) -> Unit
+    private fun ColumnScope.KartaPhotoPanel(
+        photos: List<KartaPhoto>,
+        selectedPhotoIds: Set<String>,
+        isDownloading: Boolean,
+        onToggle: (String, Boolean) -> Unit,
+        onSelectAll: () -> Unit,
+        onClearSelection: () -> Unit,
+        onDownloadSelected: () -> Unit
     ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .padding(horizontal = 8.dp, vertical = 4.dp)
+        ) {
+            Text(
+                text = "Open imagery from KartaView",
+                style = MaterialTheme.typography.subtitle1,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = KARTAVIEW_ATTRIBUTION,
+                style = MaterialTheme.typography.caption
+            )
+
+            if (photos.isEmpty()) {
+                Text(
+                    text = "Draw an area and tap Find Open Images. Available frames will appear here for selection and download.",
+                    modifier = Modifier.padding(vertical = 8.dp),
+                    style = MaterialTheme.typography.body2
+                )
+                return@Column
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                TextButton(enabled = !isDownloading, onClick = onSelectAll) { Text("Select all") }
+                TextButton(enabled = !isDownloading, onClick = onClearSelection) { Text("Clear") }
+                Button(
+                    enabled = selectedPhotoIds.isNotEmpty() && !isDownloading,
+                    onClick = onDownloadSelected
+                ) {
+                    Text(if (isDownloading) "Saving…" else "Save ${selectedPhotoIds.size}")
+                }
+            }
+
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+            ) {
+                items(photos, key = { it.id }) { photo ->
+                    KartaPhotoRow(
+                        photo = photo,
+                        isSelected = photo.id in selectedPhotoIds,
+                        isEnabled = !isDownloading,
+                        onToggle = { checked -> onToggle(photo.id, checked) }
+                    )
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun KartaPhotoRow(
+        photo: KartaPhoto,
+        isSelected: Boolean,
+        isEnabled: Boolean,
+        onToggle: (Boolean) -> Unit
+    ) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 3.dp)
+                .clickable(enabled = isEnabled) { onToggle(!isSelected) },
+            elevation = 2.dp
+        ) {
+            Row(
+                modifier = Modifier.padding(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Checkbox(
+                    checked = isSelected,
+                    onCheckedChange = onToggle,
+                    enabled = isEnabled
+                )
+                Column {
+                    Text("Frame ${photo.id}", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        text = String.format(
+                            Locale.US,
+                            "%.6f, %.6f · %s",
+                            photo.latitude,
+                            photo.longitude,
+                            photo.capturedAt ?: "Unknown capture date"
+                        ),
+                        style = MaterialTheme.typography.caption
+                    )
+                    Text(
+                        text = "Heading: ${photo.headingDegrees?.let { String.format(Locale.US, "%.0f°", it) } ?: "Unknown"} · ${photo.projection ?: "Unknown projection"}",
+                        style = MaterialTheme.typography.caption
+                    )
+                }
+            }
+        }
+    }
+
+    private fun boundsFrom(firstCorner: LocationPoint, secondCorner: LocationPoint): AreaBounds = AreaBounds(
+        minLatitude = minOf(firstCorner.latitude, secondCorner.latitude),
+        maxLatitude = maxOf(firstCorner.latitude, secondCorner.latitude),
+        minLongitude = minOf(firstCorner.longitude, secondCorner.longitude),
+        maxLongitude = maxOf(firstCorner.longitude, secondCorner.longitude)
+    )
+
+    @Composable
+    private fun OpenMapView(
+        mode: SelectionMode,
+        selectedPoint: LocationPoint,
+        areaCorners: List<LocationPoint>,
+        onPointSelected: (LocationPoint) -> Unit,
+        onAreaCornerSelected: (LocationPoint) -> Unit
+    ) {
+        val currentMode by rememberUpdatedState(mode)
+        val currentOnPointSelected by rememberUpdatedState(onPointSelected)
+        val currentOnAreaCornerSelected by rememberUpdatedState(onAreaCornerSelected)
+        var mapLibreMap by remember { mutableStateOf<MapLibreMap?>(null) }
+        var isStyleReady by remember { mutableStateOf(false) }
+
         AndroidView(
             modifier = Modifier.fillMaxSize(),
             factory = { context ->
                 MapView(context).apply {
-                    // Switching to WIKIMEDIA as it's often more permissive than MAPNIK
-                    setTileSource(TileSourceFactory.WIKIMEDIA)
-                    setMultiTouchControls(true)
-                    controller.setZoom(15.0)
-                    controller.setCenter(GeoPoint(51.5074, -0.1278))
-                    
-                    // Force cache clearing more aggressively
-                    tileProvider.tileCache.clear()
-                    
-                    val receiver = object : MapEventsReceiver {
-                        override fun singleTapConfirmedHelper(p: GeoPoint): Boolean {
-                            if (mode == SelectionMode.POINT) {
-                                onPointSelected(p)
-                                updateMarkers(this@apply, p)
+                    this@MainActivity.mapView = this
+                    onStart()
+                    onResume()
+                    getMapAsync { map ->
+                        map.addOnMapClickListener { point ->
+                            val location = LocationPoint(point.latitude, point.longitude)
+                            if (currentMode == SelectionMode.POINT) {
+                                currentOnPointSelected(location)
                             } else {
-                                onSquarePointAdded(p)
+                                currentOnAreaCornerSelected(location)
                             }
-                            return true
+                            true
                         }
-                        override fun longPressHelper(p: GeoPoint): Boolean = false
+                        map.setStyle(OPEN_FREE_MAP_STYLE_URL) {
+                            mapLibreMap = map
+                            isStyleReady = true
+                            map.cameraPosition = CameraPosition.Builder()
+                                .target(LatLng(INITIAL_LATITUDE, INITIAL_LONGITUDE))
+                                .zoom(15.0)
+                                .build()
+                        }
                     }
-                    overlays.add(MapEventsOverlay(receiver))
                 }
             },
-            update = { view ->
-                if (mode == SelectionMode.SQUARE) {
-                    drawSquare(view, squarePoints)
+            update = {
+                if (isStyleReady) {
+                    mapLibreMap?.let { map -> renderSelection(map, mode, selectedPoint, areaCorners) }
                 }
             }
         )
     }
 
-    private fun updateMarkers(mapView: MapView, p: GeoPoint) {
-        mapView.overlays.filterIsInstance<Marker>().forEach { mapView.overlays.remove(it) }
-        val marker = Marker(mapView)
-        marker.position = p
-        marker.setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-        mapView.overlays.add(marker)
-        mapView.invalidate()
-    }
-
-    private fun drawSquare(mapView: MapView, points: List<GeoPoint>) {
-        // Clear previous polygons
-        mapView.overlays.filterIsInstance<Polygon>().forEach { mapView.overlays.remove(it) }
-        
-        if (points.size == 2) {
-            val p1 = points[0]
-            val p2 = points[1]
-            
-            val square = Polygon()
-            square.fillPaint.color = AndroidColor.argb(50, 0, 0, 255) // Semi-transparent blue
-            square.outlinePaint.color = AndroidColor.BLUE
-            square.outlinePaint.strokeWidth = 2f
-            
-            val boxPoints = listOf(
-                GeoPoint(p1.latitude, p1.longitude),
-                GeoPoint(p1.latitude, p2.longitude),
-                GeoPoint(p2.latitude, p2.longitude),
-                GeoPoint(p2.latitude, p1.longitude)
-            )
-            square.points = boxPoints
-            mapView.overlays.add(square)
+    private fun renderSelection(
+        map: MapLibreMap,
+        mode: SelectionMode,
+        selectedPoint: LocationPoint,
+        areaCorners: List<LocationPoint>
+    ) {
+        map.clear()
+        if (mode == SelectionMode.POINT) {
+            map.addMarker(MarkerOptions().position(selectedPoint.toLatLng()))
+            return
         }
-        mapView.invalidate()
+
+        areaCorners.forEach { corner ->
+            map.addMarker(MarkerOptions().position(corner.toLatLng()))
+        }
+        if (areaCorners.size == 2) {
+            val first = areaCorners[0]
+            val second = areaCorners[1]
+            map.addPolygon(
+                PolygonOptions()
+                    .addAll(
+                        listOf(
+                            LatLng(first.latitude, first.longitude),
+                            LatLng(first.latitude, second.longitude),
+                            LatLng(second.latitude, second.longitude),
+                            LatLng(second.latitude, first.longitude)
+                        )
+                    )
+                    .fillColor(AndroidColor.argb(50, 51, 102, 255))
+                    .strokeColor(AndroidColor.rgb(35, 85, 215))
+            )
+        }
     }
 
-    @SuppressLint("SetJavaScriptEnabled")
-    @Composable
-    fun StreetViewWebView(url: String) {
-        AndroidView(
-            modifier = Modifier.fillMaxSize(),
-            factory = { context ->
-                WebView(context).apply {
-                    settings.javaScriptEnabled = true
-                    settings.domStorageEnabled = true
-                    // Use a standard mobile User-Agent
-                    settings.userAgentString = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36"
-                    webViewClient = object : WebViewClient() {
-                        override fun shouldOverrideUrlLoading(view: WebView?, request: android.webkit.WebResourceRequest?): Boolean {
-                            val urlString = request?.url?.toString() ?: return false
-                            // Prevent redirects to external apps (like intent://) which WebView can't handle
-                            if (urlString.startsWith("intent://") || urlString.startsWith("market://")) {
-                                return true // Block the redirect
-                            }
-                            return false
-                        }
-
-                        override fun onPageFinished(view: WebView?, url: String?) {
-                            // Inject JS to attempt auto-accepting Google's cookie consent and mobile app prompts
-                            view?.evaluateJavascript("(function() { " +
-                                    "var buttons = document.getElementsByTagName('button');" +
-                                    "for (var i = 0; i < buttons.length; i++) {" +
-                                    "  var text = buttons[i].innerText;" +
-                                    "  if (text.indexOf('Accept all') !== -1 || text.indexOf('Keep using web') !== -1) {" +
-                                    "    buttons[i].click();" +
-                                    "  }" +
-                                    "}" +
-                                    "})()", null)
-                        }
-                    }
-                    loadUrl(url)
-                }
-            },
-            update = { webView ->
-                if (webView.url != url && !url.startsWith("intent://")) {
-                    webView.loadUrl(url)
-                }
-            }
-        )
-    }
+    private fun LocationPoint.toLatLng() = LatLng(latitude, longitude)
 }

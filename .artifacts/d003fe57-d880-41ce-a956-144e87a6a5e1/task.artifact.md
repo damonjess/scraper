@@ -1,0 +1,5 @@
+- `[x]` Updating build configuration and dependencies
+- `[x]` Adding KartaView client and exporter
+- `[x]` Updating MainActivity with MapLibre and KartaView integration
+- `[x]` Adding KartaView integration documentation
+- `[x]` Verifying the build
