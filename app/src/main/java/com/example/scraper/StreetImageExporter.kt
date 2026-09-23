@@ -5,6 +5,7 @@ import android.content.Context
 import android.net.Uri
 import android.os.Environment
 import android.provider.MediaStore
+import android.util.Log
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -193,5 +194,30 @@ object StreetImageExporter {
         } catch (_: Exception) {
             context.contentResolver.delete(uri, null, null)
         }
+    }
+
+    fun getSavedImageFileNames(context: Context): Set<String> {
+        val savedNames = HashSet<String>()
+        val projection = arrayOf(MediaStore.MediaColumns.DISPLAY_NAME)
+        val selection = "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?"
+        val selectionArgs = arrayOf("${Environment.DIRECTORY_DOCUMENTS}/$EXPORT_ROOT/%")
+        val collection = MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL)
+
+        try {
+            context.contentResolver.query(collection, projection, selection, selectionArgs, null)?.use { cursor ->
+                val nameColumn = cursor.getColumnIndex(MediaStore.MediaColumns.DISPLAY_NAME)
+                if (nameColumn != -1) {
+                    while (cursor.moveToNext()) {
+                        val name = cursor.getString(nameColumn)
+                        if (!name.isNullOrBlank() && name.endsWith(".jpg")) {
+                            savedNames.add(name)
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("StreetImageExporter", "Failed to query saved images: ${e.message}", e)
+        }
+        return savedNames
     }
 }

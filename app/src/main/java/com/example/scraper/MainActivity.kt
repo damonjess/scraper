@@ -54,8 +54,8 @@ class MainActivity : AppCompatActivity() {
 
     private companion object {
         const val OPEN_FREE_MAP_STYLE_URL = "https://tiles.openfreemap.org/styles/liberty"
-        const val INITIAL_LATITUDE = 51.5074
-        const val INITIAL_LONGITUDE = -0.1278
+        const val INITIAL_LATITUDE = 53.5809 // Scunthorpe, UK
+        const val INITIAL_LONGITUDE = -0.6502 // Scunthorpe, UK
     }
 
     data class LocationPoint(val latitude: Double, val longitude: Double)
@@ -128,6 +128,7 @@ class MainActivity : AppCompatActivity() {
         var streetViewSpacingText by remember { mutableStateOf("50") }
         var streetImages by remember { mutableStateOf<List<StreetImage>>(emptyList()) }
         var selectedImageIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+        var savedImageFileNames by remember { mutableStateOf<Set<String>>(emptySet()) }
         var previewImageIndex by remember { mutableStateOf<Int?>(null) }
         var cityName by remember { mutableStateOf("") }
         var statusText by remember { mutableStateOf("Tap Select Area, then choose an imagery provider.") }
@@ -135,6 +136,24 @@ class MainActivity : AppCompatActivity() {
         var isDownloading by remember { mutableStateOf(false) }
         var downloadCurrent by remember { mutableIntStateOf(0) }
         var downloadTotal by remember { mutableIntStateOf(0) }
+
+        // Automatically scan previously exported files when new search results arrive or tab opens
+        LaunchedEffect(streetImages, activeTab) {
+            if (streetImages.isNotEmpty()) {
+                withContext(Dispatchers.IO) {
+                    val saved = StreetImageExporter.getSavedImageFileNames(context)
+                    withContext(Dispatchers.Main) {
+                        savedImageFileNames = saved
+                        // Auto-select ONLY unsaved images by default
+                        if (selectedImageIds.isEmpty()) {
+                            selectedImageIds = streetImages
+                                .filter { it.fileName !in saved }
+                                .mapTo(linkedSetOf()) { it.stableId }
+                        }
+                    }
+                }
+            }
+        }
 
         val selectedBounds = remember(areaCorners) {
             if (areaCorners.size == 2) boundsFrom(areaCorners[0], areaCorners[1]) else null
@@ -388,6 +407,7 @@ class MainActivity : AppCompatActivity() {
                     provider = selectedProvider,
                     images = streetImages,
                     selectedImageIds = selectedImageIds,
+                    savedImageFileNames = savedImageFileNames,
                     cityName = cityName,
                     isDownloading = isDownloading,
                     downloadCurrent = downloadCurrent,
@@ -399,6 +419,11 @@ class MainActivity : AppCompatActivity() {
                         selectedImageIds = selectedImageIds.toMutableSet().apply {
                             if (isSelected) add(imageId) else remove(imageId)
                         }
+                    },
+                    onSelectUnsaved = {
+                        selectedImageIds = streetImages
+                            .filter { it.fileName !in savedImageFileNames }
+                            .mapTo(linkedSetOf()) { it.stableId }
                     },
                     onSelectAll = { selectedImageIds = streetImages.mapTo(linkedSetOf()) { it.stableId } },
                     onClearSelection = { selectedImageIds = emptySet() },
@@ -422,6 +447,13 @@ class MainActivity : AppCompatActivity() {
                                         statusText = progressText
                                     }
                                 )
+                                val saved = withContext(Dispatchers.IO) { StreetImageExporter.getSavedImageFileNames(context) }
+                                savedImageFileNames = saved
+                                // Deselect images that were just saved
+                                selectedImageIds = selectedImageIds.filterTo(linkedSetOf()) { id ->
+                                    val img = streetImages.find { it.stableId == id }
+                                    img != null && img.fileName !in saved
+                                }
                                 statusText = buildString {
                                     append("Saved ${exportResult.downloadedCount} images")
                                     if (exportResult.failedCount > 0) append("; ${exportResult.failedCount} failed")
@@ -462,6 +494,7 @@ class MainActivity : AppCompatActivity() {
         provider: ImageryProvider,
         images: List<StreetImage>,
         selectedImageIds: Set<String>,
+        savedImageFileNames: Set<String>,
         cityName: String,
         isDownloading: Boolean,
         downloadCurrent: Int,
@@ -470,6 +503,7 @@ class MainActivity : AppCompatActivity() {
         onViewModeChanged: (ViewMode) -> Unit,
         onCityNameChanged: (String) -> Unit,
         onToggle: (String, Boolean) -> Unit,
+        onSelectUnsaved: () -> Unit,
         onSelectAll: () -> Unit,
         onClearSelection: () -> Unit,
         onPreviewRequested: (StreetImage) -> Unit,
@@ -562,20 +596,30 @@ class MainActivity : AppCompatActivity() {
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            val unsavedCount = images.count { it.fileName !in savedImageFileNames }
+                            if (savedImageFileNames.isNotEmpty() && unsavedCount in 1 until images.size) {
+                                TextButton(
+                                    enabled = !isDownloading,
+                                    onClick = onSelectUnsaved,
+                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Text("Select Unsaved ($unsavedCount)")
+                                }
+                            }
                             TextButton(
                                 enabled = !isDownloading,
                                 onClick = onSelectAll,
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
                             ) {
                                 Text("Select All (${images.size})")
                             }
                             TextButton(
                                 enabled = !isDownloading && selectedImageIds.isNotEmpty(),
                                 onClick = onClearSelection,
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
                             ) {
-                                Text("Clear Selection")
+                                Text("Clear")
                             }
                         }
                         Text(
@@ -601,6 +645,7 @@ class MainActivity : AppCompatActivity() {
                             StreetImageGridCard(
                                 image = image,
                                 isSelected = image.stableId in selectedImageIds,
+                                isSaved = image.fileName in savedImageFileNames,
                                 isEnabled = !isDownloading,
                                 onToggle = { checked -> onToggle(image.stableId, checked) },
                                 onPreviewRequested = { onPreviewRequested(image) }
@@ -617,6 +662,7 @@ class MainActivity : AppCompatActivity() {
                             StreetImageListCard(
                                 image = image,
                                 isSelected = image.stableId in selectedImageIds,
+                                isSaved = image.fileName in savedImageFileNames,
                                 isEnabled = !isDownloading,
                                 onToggle = { checked -> onToggle(image.stableId, checked) },
                                 onPreviewRequested = { onPreviewRequested(image) }
@@ -709,6 +755,7 @@ class MainActivity : AppCompatActivity() {
     private fun StreetImageGridCard(
         image: StreetImage,
         isSelected: Boolean,
+        isSaved: Boolean,
         isEnabled: Boolean,
         onToggle: (Boolean) -> Unit,
         onPreviewRequested: () -> Unit
@@ -819,22 +866,40 @@ class MainActivity : AppCompatActivity() {
                         )
                     }
 
-                    // Heading degree pill in bottom left
-                    image.headingDegrees?.let { heading ->
-                        Surface(
-                            modifier = Modifier
-                                .align(Alignment.BottomStart)
-                                .padding(6.dp),
-                            shape = RoundedCornerShape(4.dp),
-                            color = Color.Black.copy(alpha = 0.75f)
-                        ) {
-                            Text(
-                                text = String.format(Locale.US, "%.0f°", heading),
-                                color = Color.White,
-                                style = MaterialTheme.typography.caption,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                            )
+                    // Saved badge or Heading degree pill in bottom left
+                    Row(
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        if (isSaved) {
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = Color(0xFF2E7D32) // Green badge
+                            ) {
+                                Text(
+                                    text = "✓ Saved",
+                                    color = Color.White,
+                                    style = MaterialTheme.typography.caption,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                        image.headingDegrees?.let { heading ->
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = Color.Black.copy(alpha = 0.75f)
+                            ) {
+                                Text(
+                                    text = String.format(Locale.US, "%.0f°", heading),
+                                    color = Color.White,
+                                    style = MaterialTheme.typography.caption,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
                         }
                     }
                 }
@@ -861,6 +926,7 @@ class MainActivity : AppCompatActivity() {
     private fun StreetImageListCard(
         image: StreetImage,
         isSelected: Boolean,
+        isSaved: Boolean,
         isEnabled: Boolean,
         onToggle: (Boolean) -> Unit,
         onPreviewRequested: () -> Unit
@@ -959,12 +1025,32 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "${image.provider.displayName} · ${image.sequenceId ?: image.id}",
-                        fontWeight = FontWeight.SemiBold,
-                        style = MaterialTheme.typography.body2,
-                        maxLines = 1
-                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "${image.provider.displayName} · ${image.sequenceId ?: image.id}",
+                            fontWeight = FontWeight.SemiBold,
+                            style = MaterialTheme.typography.body2,
+                            maxLines = 1,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        if (isSaved) {
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = Color(0xFF2E7D32)
+                            ) {
+                                Text(
+                                    text = "✓ Saved",
+                                    color = Color.White,
+                                    style = MaterialTheme.typography.caption,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                )
+                            }
+                        }
+                    }
                     Text(
                         text = String.format(
                             Locale.US,

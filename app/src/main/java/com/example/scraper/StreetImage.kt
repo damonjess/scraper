@@ -43,6 +43,7 @@ data class StreetImage(
     val attribution: String = provider.attribution
 ) {
     val stableId: String get() = "${provider.shortName}:$id"
+    val fileName: String get() = "${provider.shortName}_$id.jpg"
 }
 
 class ProviderSearchException(message: String) : IllegalStateException(message)
