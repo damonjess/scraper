@@ -17,6 +17,12 @@ enum class ImageryProvider(
         shortName = "mapillary",
         attribution = "© Mapillary",
         license = "CC BY-SA 4.0"
+    ),
+    GOOGLE_STREETVIEW(
+        displayName = "Google Street View",
+        shortName = "streetview",
+        attribution = "© Google",
+        license = "Google Maps Platform Terms of Service"
     )
 }
 

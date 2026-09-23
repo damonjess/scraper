@@ -1,5 +1,8 @@
 package com.example.scraper
 
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.math.ceil
 import kotlin.math.min
 import org.json.JSONObject
@@ -134,6 +137,15 @@ object MapillaryClient {
             ?: optString("thumb_256_url").takeIf { it.isNotBlank() }
             ?: return null
 
+        val capturedAtTimestamp = optLong("captured_at", 0L).takeIf { it > 0L }
+        val capturedAtString = capturedAtTimestamp?.let { millis ->
+            try {
+                SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date(millis))
+            } catch (_: Exception) {
+                millis.toString()
+            }
+        }
+
         return StreetImage(
             provider = ImageryProvider.MAPILLARY,
             id = id,
@@ -141,7 +153,7 @@ object MapillaryClient {
             latitude = latitude,
             longitude = longitude,
             headingDegrees = optDouble("compass_angle", Double.NaN).takeIf { it.isFinite() },
-            capturedAt = optLong("captured_at", 0L).takeIf { it > 0L }?.toString(),
+            capturedAt = capturedAtString,
             projection = optString("camera_type").takeIf { it.isNotBlank() },
             fieldOfView = null,
             imageUrl = imageUrl,

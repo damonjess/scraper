@@ -26,6 +26,8 @@ android {
         }
         val mapillaryToken = properties.getProperty("mapillary.token") ?: ""
         buildConfigField("String", "MAPILLARY_TOKEN", "\"$mapillaryToken\"")
+        val googleStreetViewKey = properties.getProperty("google.streetview.key") ?: ""
+        buildConfigField("String", "GOOGLE_STREETVIEW_KEY", "\"$googleStreetViewKey\"")
     }
 
     buildTypes {
@@ -57,6 +59,7 @@ dependencies {
     implementation(libs.compose.tooling.preview)
     implementation(libs.maplibre)
     implementation(libs.jsoup)
+    implementation(libs.coil.compose)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.junit)

@@ -33,7 +33,7 @@ object StreetImageExporter {
         context: Context,
         images: List<StreetImage>,
         cityName: String,
-        onProgress: (String) -> Unit
+        onProgress: (downloaded: Int, total: Int, statusText: String) -> Unit
     ): StreetImageExportResult = withContext(Dispatchers.IO) {
         val exportId = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val sanitizedCity = cityName.trim()
@@ -49,9 +49,13 @@ object StreetImageExporter {
         val savedImages = mutableListOf<SavedStreetImage>()
         var failedCount = 0
 
+        withContext(Dispatchers.Main) {
+            onProgress(0, images.size, "Starting download of ${images.size} selected images…")
+        }
+
         images.forEachIndexed { index, image ->
             withContext(Dispatchers.Main) {
-                onProgress("Downloading ${index + 1} of ${images.size} selected images…")
+                onProgress(index, images.size, "Downloading ${index + 1} of ${images.size} selected images…")
             }
             val fileName = "${image.provider.shortName}_${image.id}.jpg"
             val savedUri = downloadImage(context, image, fileName, relativePath)
@@ -59,6 +63,9 @@ object StreetImageExporter {
                 failedCount++
             } else {
                 savedImages += SavedStreetImage(image, fileName, savedUri)
+            }
+            withContext(Dispatchers.Main) {
+                onProgress(index + 1, images.size, "Downloaded ${index + 1} of ${images.size} images")
             }
         }
 
@@ -95,7 +102,8 @@ object StreetImageExporter {
         put("latitude", image.latitude.sanitize())
         put("longitude", image.longitude.sanitize())
         put("heading", image.headingDegrees.sanitize())
-        put("imageUrl", image.imageUrl)
+        // Google Street View URLs embed the API key; record the keyless form.
+        put("imageUrl", image.imageUrl.substringBefore("&key="))
         put("fileName", fileName)
     }
 
@@ -142,7 +150,7 @@ object StreetImageExporter {
     private fun writeTextFile(context: Context, fileName: String, relativePath: String, mimeType: String, content: String) {
         val uri = createMediaFile(context, fileName, relativePath, mimeType) ?: return
         try {
-            context.contentResolver.openOutputStream(uri)?.use { it.write(content.toByteArray()) }
+            context.contentResolver.openOutputStream(uri)?.use { it.write(content.toByteArray(Charsets.UTF_8)) }
             completeFile(context, uri)
         } catch (_: Exception) {
             context.contentResolver.delete(uri, null, null)
