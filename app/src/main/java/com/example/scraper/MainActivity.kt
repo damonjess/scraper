@@ -728,8 +728,8 @@ class MainActivity : AppCompatActivity() {
                         .height(150.dp)
                 ) {
                     val context = LocalContext.current
-                    val previewUrl = image.thumbnailUrl ?: image.imageUrl
-                    if (previewUrl.isNotBlank()) {
+                    val previewUrl = image.thumbnailUrl
+                    if (!previewUrl.isNullOrBlank()) {
                         val imageRequest = remember(previewUrl) {
                             ImageRequest.Builder(context)
                                 .data(previewUrl)
@@ -778,10 +778,29 @@ class MainActivity : AppCompatActivity() {
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .background(Color.DarkGray),
+                                .background(Color(0xFF222222)),
                             contentAlignment = Alignment.Center
                         ) {
-                            Text("No Image Preview", style = MaterialTheme.typography.caption)
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center,
+                                modifier = Modifier.padding(8.dp)
+                            ) {
+                                Text(
+                                    text = image.sequenceId ?: image.provider.displayName,
+                                    style = MaterialTheme.typography.caption,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colors.primary,
+                                    textAlign = TextAlign.Center
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = "Tap to preview",
+                                    style = MaterialTheme.typography.caption,
+                                    color = Color.LightGray,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
                         }
                     }
 
@@ -865,8 +884,8 @@ class MainActivity : AppCompatActivity() {
                     enabled = isEnabled
                 )
                 val context = LocalContext.current
-                val previewUrl = image.thumbnailUrl ?: image.imageUrl
-                if (previewUrl.isNotBlank()) {
+                val previewUrl = image.thumbnailUrl
+                if (!previewUrl.isNullOrBlank()) {
                     val imageRequest = remember(previewUrl) {
                         ImageRequest.Builder(context)
                             .data(previewUrl)
@@ -907,6 +926,35 @@ class MainActivity : AppCompatActivity() {
                             else -> {
                                 SubcomposeAsyncImageContent()
                             }
+                        }
+                    }
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .size(110.dp, 80.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color(0xFF222222))
+                            .clickable { onPreviewRequested() },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center,
+                            modifier = Modifier.padding(4.dp)
+                        ) {
+                            Text(
+                                text = "Street View",
+                                style = MaterialTheme.typography.caption,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colors.primary,
+                                textAlign = TextAlign.Center
+                            )
+                            Text(
+                                text = "Tap to view",
+                                style = MaterialTheme.typography.overline,
+                                color = Color.LightGray,
+                                textAlign = TextAlign.Center
+                            )
                         }
                     }
                 }

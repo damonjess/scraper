@@ -33,7 +33,6 @@ object GoogleStreetViewClient {
     private const val METERS_PER_DEGREE_LATITUDE = 111_320.0
     private const val PARALLEL_REQUESTS = 8
     private const val IMAGE_SIZE = "640x640"
-    private const val THUMBNAIL_SIZE = "400x300"
     private const val FIELD_OF_VIEW_DEGREES = 90
 
     private data class PanoMetadata(
@@ -140,8 +139,7 @@ object GoogleStreetViewClient {
         val resultImages = mutableListOf<StreetImage>()
         panoramasById.values.forEach { pano ->
             cardinalAngles.forEach { (heading, label) ->
-                val imageUrl = buildImageUrl(apiKey, pano.panoId, heading, IMAGE_SIZE)
-                val thumbnailUrl = buildImageUrl(apiKey, pano.panoId, heading, THUMBNAIL_SIZE)
+                val imageUrl = buildImageUrl(apiKey, pano.panoId, heading)
                 resultImages.add(
                     StreetImage(
                         provider = ImageryProvider.GOOGLE_STREETVIEW,
@@ -154,7 +152,7 @@ object GoogleStreetViewClient {
                         projection = "perspective",
                         fieldOfView = FIELD_OF_VIEW_DEGREES.toDouble(),
                         imageUrl = imageUrl,
-                        thumbnailUrl = thumbnailUrl
+                        thumbnailUrl = null // Avoid auto-loading paid Static API thumbnails in UI grids
                     )
                 )
             }
@@ -239,12 +237,11 @@ object GoogleStreetViewClient {
     private fun buildImageUrl(
         apiKey: String,
         panoId: String,
-        heading: Int,
-        size: String = IMAGE_SIZE
+        heading: Int
     ): String = buildString {
         append(IMAGE_ENDPOINT)
         append("?pano=").append(URLEncoder.encode(panoId, "UTF-8"))
-        append("&size=").append(size)
+        append("&size=").append(IMAGE_SIZE)
         append("&heading=").append(heading)
         append("&fov=").append(FIELD_OF_VIEW_DEGREES)
         append("&key=").append(URLEncoder.encode(apiKey, "UTF-8"))
